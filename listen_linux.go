@@ -21,11 +21,11 @@ func Listen(address string) (*net.TCPListener, error) {
 		return nil, err
 	}
 
-	if err := syscall.SetsockoptInt(s.fd, syscall.SOL_TCP, TCP_FASTOPEN, 1); err != nil {
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_TCP, TCP_FASTOPEN, 1); err != nil {
 		return nil, err
 	}
 
-	if err := syscall.SetsockoptInt(s.fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
 		return nil, err
 	}
 
@@ -43,7 +43,10 @@ func Listen(address string) (*net.TCPListener, error) {
 	}
 
 	listenerDummy := &tcp_listener_t{}
-	listenerDummy.fd = newNetFD(fd)
+	listenerDummy.fd, err = newNetFD(fd)
+	if err != nil {
+		return nil, err
+	}
 
 	listener := &net.TCPListener{}
 

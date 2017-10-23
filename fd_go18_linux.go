@@ -1,4 +1,4 @@
-// +build go1.8
+// +build go1.8, !go1.9
 
 package gotfo
 
@@ -27,7 +27,7 @@ type netFD struct {
 	pd pollDesc
 }
 
-func newNetFD(fd int) *netFD {
+func newNetFD(fd int) (*netFD, error) {
 	nfd := &netFD{
 		sysfd:    fd,
 		family:   syscall.AF_INET,
@@ -36,6 +36,5 @@ func newNetFD(fd int) *netFD {
 		isStream: true,
 	}
 
-	nfd.pd.init(nfd)
-	return nfd
+	return nfd, nfd.pd.init(nfd)
 }
