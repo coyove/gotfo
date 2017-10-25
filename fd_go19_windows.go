@@ -2,19 +2,18 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build go1.8,!go1.9
+// +build go1.9
 
 package gotfo
 
 import (
-	"context"
-	"io"
-	"log"
-	"net"
-	"os"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
+	"net"
+	"os"
+	"context"
 )
 
 var (
@@ -42,7 +41,7 @@ func sysInit() {
 	var d syscall.WSAData
 	e := syscall.WSAStartup(uint32(0x202), &d)
 	if e != nil {
-		initErr = os.NewSyscallError("wsastartup", e)
+		initErr = e
 	}
 	canCancelIO = syscall.LoadCancelIoEx() == nil
 	hasLoadSetFileCompletionNotificationModes = syscall.LoadSetFileCompletionNotificationModes() == nil
@@ -67,13 +66,6 @@ func sysInit() {
 	}
 }
 
-func (fd *netFD) eofError(n int, err error) error {
-	if n == 0 && err == nil && fd.sotype != syscall.SOCK_DGRAM && fd.sotype != syscall.SOCK_RAW {
-		return io.EOF
-	}
-	return err
-}
-
 // operation contains superset of data necessary to perform all async IO.
 type operation struct {
 	// Used by IOCP interface, it must be first field
@@ -87,7 +79,7 @@ type operation struct {
 	qty        uint32
 
 	// fields used only by net package
-	fd     *netFD
+	fd     *pollFD
 	errc   chan error
 	buf    syscall.WSABuf
 	sa     syscall.Sockaddr
@@ -105,7 +97,7 @@ type operation struct {
 func ExecIO(o *operation, name string, submit func(o *operation) error) (int, error) {
 	fd := o.fd
 	// Notify runtime netpoll about starting IO.
-	err := fd.pd.prepare(int(o.mode))
+	err := fd.pd.prepare(int(o.mode), false)
 	if err != nil {
 		return 0, err
 	}
@@ -127,7 +119,7 @@ func ExecIO(o *operation, name string, submit func(o *operation) error) (int, er
 		return 0, err
 	}
 	// Wait for our request to complete.
-	err = fd.pd.wait(int(o.mode))
+	err = fd.pd.wait(int(o.mode), false)
 	if err == nil {
 		// All is good. Extract our IO results and return.
 		if o.errno != 0 {
@@ -168,53 +160,63 @@ func ExecIO(o *operation, name string, submit func(o *operation) error) (int, er
 	return int(o.qty), nil
 }
 
-// Network file descriptor.
-type netFD struct {
-	// locking/lifetime of sysfd + serialize access to Read and Write methods
+type pollFD struct {
+	// Lock sysfd and serialize access to Read and Write methods.
 	fdmu fdMutex
 
-	// immutable until Close
-	sysfd         syscall.Handle
-	family        int
-	sotype        int
-	isStream      bool
-	isConnected   bool
-	skipSyncNotif bool
-	net           string
-	laddr         net.Addr
-	raddr         net.Addr
+	// System file descriptor. Immutable until Close.
+	sysfd syscall.Handle
 
-	rop operation // read operation
-	wop operation // write operation
+	// Read operation.
+	rop operation
+	// Write operation.
+	wop operation
 
-	// wait server
+	// I/O poller.
 	pd pollDesc
+
+	// Used to implement pread/pwrite.
+	l sync.Mutex
+
+	// For console I/O.
+	isConsole      bool
+	lastbits       []byte   // first few bytes of the last incomplete rune in last write
+	readuint16     []uint16 // buffer to hold uint16s obtained with ReadConsole
+	readbyte       []byte   // buffer to hold decoding of readuint16 from utf16 to utf8
+	readbyteOffset int      // readbyte[readOffset:] is yet to be consumed with file.Read
+
+	skipSyncNotif bool
+
+	// Whether this is a streaming descriptor, as opposed to a
+	// packet-based descriptor like a UDP socket.
+	IsStream bool
+
+	// Whether a zero byte read indicates EOF. This is false for a
+	// message based socket connection.
+	ZeroReadIsEOF bool
+
+	// Whether this is a normal file.
+	isFile bool
+
+	// Whether this is a directory.
+	isDir bool
 }
 
-func newFD(sysfd syscall.Handle, family int) (*netFD, error) {
+func (fd *pollFD) Init() error {
 	if initErr != nil {
-		return nil, initErr
+		return initErr
 	}
 
-	return &netFD{
-		sysfd:    sysfd,
-		family:   family,
-		sotype:   syscall.SOCK_STREAM,
-		net:      "tcp",
-		isStream: true,
-	}, nil
-}
-
-func (fd *netFD) init() error {
 	if err := fd.pd.init(fd); err != nil {
 		return err
 	}
+
 	if hasLoadSetFileCompletionNotificationModes {
 		// We do not use events, so we can skip them always.
 		flags := uint8(syscall.FILE_SKIP_SET_EVENT_ON_HANDLE)
 		// It's not safe to skip completion notifications for UDP:
 		// http://blogs.technet.com/b/winserverperformance/archive/2008/06/26/designing-applications-for-high-performance-part-iii.aspx
-		if skipSyncNotif && fd.net == "tcp" {
+		if skipSyncNotif {
 			flags |= syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
 		}
 		err := syscall.SetFileCompletionNotificationModes(fd.sysfd, flags)
@@ -222,7 +224,7 @@ func (fd *netFD) init() error {
 			fd.skipSyncNotif = true
 		}
 	}
-
+	
 	fd.rop.mode = 'r'
 	fd.wop.mode = 'w'
 	fd.rop.fd = fd
@@ -231,6 +233,89 @@ func (fd *netFD) init() error {
 	fd.wop.runtimeCtx = fd.pd.runtimeCtx
 
 	return nil
+}
+
+// incref adds a reference to fd.
+// It returns an error when fd cannot be used.
+func (fd *pollFD) incref() error {
+	if !fd.fdmu.incref() {
+		return errClosing
+	}
+	return nil
+}
+
+// decref removes a reference from fd.
+// It also closes fd when the state of fd is set to closed and there
+// is no remaining reference.
+func (fd *pollFD) decref() error {
+	if fd.fdmu.decref() {
+		return fd.destroy()
+	}
+	return nil
+}
+
+func (fd *pollFD) destroy() error {
+	if fd.sysfd == syscall.InvalidHandle {
+		return syscall.EINVAL
+	}
+	// Poller may want to unregister fd in readiness notification mechanism,
+	// so this must be executed before fd.syscall.Close.
+	fd.pd.close()
+
+	err := syscall.Close(fd.sysfd)
+	fd.sysfd = syscall.InvalidHandle
+	return err
+}
+
+// Close closes the FD. The underlying file descriptor is closed by
+// the destroy method when there are no remaining references.
+func (fd *pollFD) Close() error {
+	if !fd.fdmu.increfAndClose() {
+		return errClosing
+	}
+	// unblock pending reader and writer
+	fd.pd.evict()
+	return fd.decref()
+}
+
+// Shutdown wraps the shutdown network call.
+func (fd *pollFD) Shutdown(how int) error {
+	if err := fd.incref(); err != nil {
+		return err
+	}
+	defer fd.decref()
+	return syscall.Shutdown(fd.sysfd, how)
+}
+
+// Network file descriptor.
+type netFD struct {
+	pollFD
+
+	// immutable until Close
+	family      int
+	sotype      int
+	isConnected bool
+	net         string
+	laddr       net.Addr
+	raddr       net.Addr
+}
+
+func newFD(sysfd syscall.Handle, family int) (*netFD, error) {
+	ret := &netFD{
+		pollFD: pollFD{
+			sysfd:         sysfd,
+			IsStream:      true,
+			ZeroReadIsEOF: true,
+		},
+		family: family,
+		sotype: syscall.SOCK_STREAM,
+		net:    "tcp",
+	}
+	return ret, nil
+}
+
+func (fd *netFD) init() error {
+	return fd.pollFD.Init()
 }
 
 func (fd *netFD) setAddr(laddr, raddr net.Addr) {
@@ -247,8 +332,8 @@ func (fd *netFD) connect(ctx context.Context, ra syscall.Sockaddr, data []byte) 
 		return err
 	}
 	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
-		fd.setWriteDeadline(deadline)
-		defer fd.setWriteDeadline(noDeadline)
+		fd.pollFD.SetWriteDeadline(deadline)
+		defer fd.pollFD.SetWriteDeadline(noDeadline)
 	}
 
 	// ConnectEx windows API requires an unconnected, previously bound socket.
@@ -280,7 +365,7 @@ func (fd *netFD) connect(ctx context.Context, ra syscall.Sockaddr, data []byte) 
 		case <-ctx.Done():
 			// Force the runtime's poller to immediately give
 			// up waiting for writability.
-			fd.setWriteDeadline(aLongTimeAgo)
+			fd.pollFD.SetWriteDeadline(aLongTimeAgo)
 			<-done
 		case <-done:
 		}

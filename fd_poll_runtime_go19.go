@@ -49,9 +49,6 @@ func runtime_Semacquire(sema *uint32)
 //go:linkname runtime_Semrelease internal/poll.runtime_Semrelease
 func runtime_Semrelease(sema *uint32)
 
-//go:linkname runtime_pollServerDescriptor internal/poll.runtime_pollServerDescriptor
-func runtime_pollServerDescriptor() uintptr
-
 type pollDesc struct {
 	runtimeCtx uintptr
 }
@@ -179,10 +176,4 @@ func setDeadlineImpl(fd *pollFD, t time.Time, mode int) error {
 	runtime_pollSetDeadline(fd.pd.runtimeCtx, d, mode)
 	fd.decref()
 	return nil
-}
-
-// PollDescriptor returns the descriptor being used by the poller,
-// or ^uintptr(0) if there isn't one. This is only used for testing.
-func PollDescriptor() uintptr {
-	return runtime_pollServerDescriptor()
 }
