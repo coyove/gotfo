@@ -1,3 +1,0 @@
-package gotfo
-
-import "C"
