@@ -15,7 +15,6 @@ import (
 
 var (
 	initErr error
-	ioSync  uint64
 )
 
 // CancelIo Windows API cancels all outstanding IO for a particular

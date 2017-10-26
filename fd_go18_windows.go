@@ -15,7 +15,6 @@ import (
 
 var (
 	initErr error
-	ioSync  uint64
 )
 
 // CancelIo Windows API cancels all outstanding IO for a particular
@@ -123,18 +122,17 @@ func (fd *netFD) init() error {
 	if err := fd.pd.init(fd); err != nil {
 		return err
 	}
-	if hasLoadSetFileCompletionNotificationModes {
-		// We do not use events, so we can skip them always.
-		flags := uint8(syscall.FILE_SKIP_SET_EVENT_ON_HANDLE)
-		// It's not safe to skip completion notifications for UDP:
-		// http://blogs.technet.com/b/winserverperformance/archive/2008/06/26/designing-applications-for-high-performance-part-iii.aspx
-		if skipSyncNotif {
-			flags |= syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
-		}
-		err := syscall.SetFileCompletionNotificationModes(fd.sysfd, flags)
-		if err == nil && flags&syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS != 0 {
-			fd.skipSyncNotif = true
-		}
+
+	// We do not use events, so we can skip them always.
+	flags := uint8(syscall.FILE_SKIP_SET_EVENT_ON_HANDLE)
+	// It's not safe to skip completion notifications for UDP:
+	// http://blogs.technet.com/b/winserverperformance/archive/2008/06/26/designing-applications-for-high-performance-part-iii.aspx
+	if skipSyncNotif {
+		flags |= syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
+	}
+	err := syscall.SetFileCompletionNotificationModes(fd.sysfd, flags)
+	if err == nil && flags&syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS != 0 {
+		fd.skipSyncNotif = true
 	}
 
 	fd.rop.mode = 'r'
