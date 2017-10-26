@@ -5,8 +5,6 @@
 package gotfo
 
 import (
-	"C"
-
 	"context"
 	"net"
 	"syscall"

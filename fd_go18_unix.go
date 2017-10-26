@@ -5,7 +5,6 @@ package gotfo
 
 import (
 	"net"
-	"runtime"
 	"syscall"
 )
 
@@ -46,11 +45,11 @@ func (fd *netFD) init() error {
 	return fd.pd.init(fd)
 }
 
-func (fd *netFD) destroy() {
+func (fd *netFD) destroy() error {
 	// Poller may want to unregister fd in readiness notification mechanism,
 	// so this must be executed before closeFunc.
 	fd.pd.close()
-	syscall.Close(fd.sysfd)
+	err := syscall.Close(fd.sysfd)
 	fd.sysfd = -1
-	runtime.SetFinalizer(fd, nil)
+	return err
 }

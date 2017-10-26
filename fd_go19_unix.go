@@ -60,7 +60,7 @@ func newFD(fd int) *netFD {
 }
 
 func (fd *netFD) init() error {
-	return fd.pd.init(&fd.pollFD)
+	return fd.pd.init(fd)
 }
 
 func (fd *pollFD) incref() error {

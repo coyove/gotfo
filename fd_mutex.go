@@ -7,7 +7,9 @@
 
 package gotfo
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // fdMutex is a specialized synchronization primitive that manages
 // lifetime of an fd and serializes access to Read, Write and Close
@@ -205,10 +207,12 @@ func (fd *netFD) incref() error {
 // decref removes a reference from fd.
 // It also closes fd when the state of fd is set to closed and there
 // is no remaining reference.
-func (fd *netFD) decref() {
+func (fd *netFD) decref() error {
 	if fd.fdmu.decref() {
-		fd.destroy()
+		return fd.destroy()
 	}
+
+	return nil
 }
 
 // readLock adds a reference to fd and locks fd for reading.

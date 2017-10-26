@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
-	"time"
 	_ "unsafe"
 )
 
@@ -61,103 +60,5 @@ func (pd *pollDesc) init(fd *netFD) error {
 		return syscall.Errno(errno)
 	}
 	pd.runtimeCtx = ctx
-	return nil
-}
-
-func (pd *pollDesc) close() {
-	if pd.runtimeCtx == 0 {
-		return
-	}
-	runtime_pollClose(pd.runtimeCtx)
-	pd.runtimeCtx = 0
-}
-
-// Evict evicts fd from the pending list, unblocking any I/O running on fd.
-func (pd *pollDesc) evict() {
-	if pd.runtimeCtx == 0 {
-		return
-	}
-	runtime_pollUnblock(pd.runtimeCtx)
-}
-
-func (pd *pollDesc) prepare(mode int) error {
-	res := runtime_pollReset(pd.runtimeCtx, mode)
-	return convertErr(res)
-}
-
-func (pd *pollDesc) prepareRead() error {
-	return pd.prepare('r')
-}
-
-func (pd *pollDesc) prepareWrite() error {
-	return pd.prepare('w')
-}
-
-func (pd *pollDesc) wait(mode int) error {
-	res := runtime_pollWait(pd.runtimeCtx, mode)
-	return convertErr(res)
-}
-
-func (pd *pollDesc) waitRead() error {
-	return pd.wait('r')
-}
-
-func (pd *pollDesc) waitWrite() error {
-	return pd.wait('w')
-}
-
-func (pd *pollDesc) waitCanceled(mode int) {
-	runtime_pollWaitCanceled(pd.runtimeCtx, mode)
-}
-
-func (pd *pollDesc) waitCanceledRead() {
-	pd.waitCanceled('r')
-}
-
-func (pd *pollDesc) waitCanceledWrite() {
-	pd.waitCanceled('w')
-}
-
-func convertErr(res int) error {
-	switch res {
-	case 0:
-		return nil
-	case 1:
-		return errClosing
-	case 2:
-		return errTimeout
-	}
-	println("unreachable: ", res)
-	panic("unreachable")
-}
-
-func (fd *netFD) setDeadline(t time.Time) error {
-	return setDeadlineImpl(fd, t, 'r'+'w')
-}
-
-func (fd *netFD) setReadDeadline(t time.Time) error {
-	return setDeadlineImpl(fd, t, 'r')
-}
-
-func (fd *netFD) setWriteDeadline(t time.Time) error {
-	return setDeadlineImpl(fd, t, 'w')
-}
-
-func setDeadlineImpl(fd *netFD, t time.Time, mode int) error {
-	diff := int64(time.Until(t))
-	d := runtimeNano() + diff
-	if d <= 0 && diff > 0 {
-		// If the user has a deadline in the future, but the delay calculation
-		// overflows, then set the deadline to the maximum possible value.
-		d = 1<<63 - 1
-	}
-	if t.IsZero() {
-		d = 0
-	}
-	if err := fd.incref(); err != nil {
-		return err
-	}
-	runtime_pollSetDeadline(fd.pd.runtimeCtx, d, mode)
-	fd.decref()
 	return nil
 }
