@@ -62,11 +62,7 @@ func newTCPConn(fd *netFD) *net.TCPConn {
 		fd.decref()
 	}
 
-	conn := &net.TCPConn{}
-	buf1 := (*[8]byte)(unsafe.Pointer(conn))
-	buf2 := (*[8]byte)(unsafe.Pointer(dummyConn))
-
-	copy(buf1[:], buf2[:])
+	conn := (*net.TCPConn)(unsafe.Pointer(dummyConn))
 	return conn
 }
 
@@ -74,11 +70,7 @@ func newTCPListener(fd *netFD, returnWrapper bool) net.Listener {
 	dummyListener := &TCPListener{}
 	dummyListener.fd = fd
 
-	listener := &net.TCPListener{}
-	buf1 := (*[8]byte)(unsafe.Pointer(listener))
-	buf2 := (*[8]byte)(unsafe.Pointer(dummyListener))
-
-	copy(buf1[:], buf2[:])
+	listener := (*net.TCPListener)(unsafe.Pointer(dummyListener))
 
 	if returnWrapper {
 		return &TFOListener{listener, fd}
